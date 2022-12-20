@@ -30,7 +30,16 @@ TEST_DATA_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), 'testdata')
 TEST_BUCKET = 'test-osv-source-bucket'
 
-_EMPTY_VULNERABILITY = 'id: EMPTY'
+_MIN_VALID_VULNERABILITY = '''{
+   "id":"OSV-2017-134",
+   "modified":"2021-01-01T00:00:00Z",
+   "schema_version":"1.3.0",
+}'''
+
+_MIN_INVALID_VULNERABILITY = '''{
+   "id":"OSV-2017-145",
+   "schema_version":"1.3.0",
+}'''
 
 
 @mock.patch('importer.utcnow', lambda: datetime.datetime(2021, 1, 1))
@@ -64,6 +73,8 @@ class ImporterTest(unittest.TestCase, tests.ExpectationTest(TEST_DATA_DIR)):
         repo_username='',
         ignore_patterns=['.*IGNORE.*'])
     self.source_repo.put()
+
+    self.tasks_topic = f'projects/{tests.TEST_PROJECT_ID}/topics/tasks'
 
   def tearDown(self):
     shutil.rmtree(self.tmp_dir, ignore_errors=True)
@@ -141,11 +152,12 @@ class ImporterTest(unittest.TestCase, tests.ExpectationTest(TEST_DATA_DIR)):
         },
     ).put()
 
-    self.mock_repo.add_file('2021-111.yaml', _EMPTY_VULNERABILITY)
+    self.mock_repo.add_file('2021-111.yaml', _MIN_VALID_VULNERABILITY)
     self.mock_repo.commit('User', 'user@email')
 
     imp = importer.Importer('fake_public_key', 'fake_private_key', self.tmp_dir,
-                            'bucket')
+                            importer.DEFAULT_PUBLIC_LOGGING_BUCKET, 'bucket',
+                            True)
     imp.run()
 
     repo = pygit2.Repository(self.remote_source_repo_path)
@@ -159,11 +171,11 @@ class ImporterTest(unittest.TestCase, tests.ExpectationTest(TEST_DATA_DIR)):
 
     mock_publish.assert_has_calls([
         mock.call(
-            'projects/oss-vdb/topics/tasks',
+            self.tasks_topic,
             data=b'',
             deleted='false',
-            original_sha256=('bd3cc48676794308a58a19c97972a5e5'
-                             '42abcc9eb948db5701421616432cc0b9'),
+            original_sha256=('874535768a62eb9dc4f3ea7acd9a4601'
+                             '19a3cd03fc15360bf16187f54df92a75'),
             path='2021-111.yaml',
             source='oss-fuzz',
             type='update')
@@ -188,9 +200,26 @@ class ImporterTest(unittest.TestCase, tests.ExpectationTest(TEST_DATA_DIR)):
     ])
 
   @mock.patch('google.cloud.pubsub_v1.PublisherClient.publish')
-  def test_delete(self, mock_publish):
+  def test_invalid(self, mock_publish: mock.MagicMock):
+    """Test invalid entries behaves correctly."""
+    self.mock_repo.add_file('2021-111.yaml', _MIN_INVALID_VULNERABILITY)
+    self.mock_repo.commit('User', 'user@email')
+
+    imp = importer.Importer('fake_public_key', 'fake_private_key', self.tmp_dir,
+                            importer.DEFAULT_PUBLIC_LOGGING_BUCKET, 'bucket',
+                            True)
+    imp.run()
+
+    mock_publish.assert_not_called()
+    bucket = self.mock_storage_client().bucket(
+        importer.DEFAULT_PUBLIC_LOGGING_BUCKET)
+    expected_log = bucket.blob().upload_from_string.call_args[0][0]
+    self.assertIn('Failed to parse vulnerability', expected_log)
+
+  @mock.patch('google.cloud.pubsub_v1.PublisherClient.publish')
+  def test_nop(self, mock_publish: mock.MagicMock):
     """Test deletion."""
-    self.mock_repo.add_file('2021-111.yaml', _EMPTY_VULNERABILITY)
+    self.mock_repo.add_file('2021-111.yaml', _MIN_VALID_VULNERABILITY)
     self.mock_repo.commit('User', 'user@email')
 
     repo = pygit2.Repository(self.remote_source_repo_path)
@@ -199,30 +228,19 @@ class ImporterTest(unittest.TestCase, tests.ExpectationTest(TEST_DATA_DIR)):
     self.source_repo.last_synced_hash = str(synced_commit.id)
     self.source_repo.put()
 
-    self.mock_repo.delete_file('2021-111.yaml')
-    self.mock_repo.commit('User', 'user@email')
-
     imp = importer.Importer('fake_public_key', 'fake_private_key', self.tmp_dir,
-                            'bucket')
+                            importer.DEFAULT_PUBLIC_LOGGING_BUCKET, 'bucket',
+                            True)
     imp.run()
 
-    mock_publish.assert_has_calls([
-        mock.call(
-            'projects/oss-vdb/topics/tasks',
-            data=b'',
-            deleted='true',
-            original_sha256='',
-            path='2021-111.yaml',
-            source='oss-fuzz',
-            type='update')
-    ])
+    mock_publish.assert_not_called()
 
   @mock.patch('google.cloud.pubsub_v1.PublisherClient.publish')
   def test_scheduled_updates(self, mock_publish):
     """Test scheduled updates."""
-    self.mock_repo.add_file('proj/OSV-2021-1337.yaml', _EMPTY_VULNERABILITY)
-    self.mock_repo.add_file('proj/OSV-2021-1339.yaml', _EMPTY_VULNERABILITY)
-    self.mock_repo.add_file('OSV-2021-1338.yaml', _EMPTY_VULNERABILITY)
+    self.mock_repo.add_file('proj/OSV-2021-1337.yaml', _MIN_VALID_VULNERABILITY)
+    self.mock_repo.add_file('proj/OSV-2021-1339.yaml', _MIN_VALID_VULNERABILITY)
+    self.mock_repo.add_file('OSV-2021-1338.yaml', _MIN_VALID_VULNERABILITY)
     self.mock_repo.commit('OSV', 'infra@osv.dev')
 
     osv.SourceRepository(
@@ -271,21 +289,22 @@ class ImporterTest(unittest.TestCase, tests.ExpectationTest(TEST_DATA_DIR)):
         timestamp=datetime.datetime(2020, 1, 1, 0, 0, 0, 0)).put()
 
     imp = importer.Importer('fake_public_key', 'fake_private_key', self.tmp_dir,
-                            'bucket')
+                            importer.DEFAULT_PUBLIC_LOGGING_BUCKET, 'bucket',
+                            True)
     imp.run()
 
     mock_publish.assert_has_calls([
         mock.call(
-            'projects/oss-vdb/topics/tasks',
+            self.tasks_topic,
             data=b'',
             deleted='false',
-            original_sha256=('bd3cc48676794308a58a19c97972a5e5'
-                             '42abcc9eb948db5701421616432cc0b9'),
+            original_sha256=('874535768a62eb9dc4f3ea7acd9a4601'
+                             '19a3cd03fc15360bf16187f54df92a75'),
             path='proj/OSV-2021-1337.yaml',
             source='oss-fuzz',
             type='update'),
         mock.call(
-            'projects/oss-vdb/topics/tasks',
+            self.tasks_topic,
             allocated_id='OSV-2021-1339',
             data=b'',
             source_id='oss-fuzz:124',
@@ -295,14 +314,13 @@ class ImporterTest(unittest.TestCase, tests.ExpectationTest(TEST_DATA_DIR)):
     source_repo = osv.SourceRepository.get_by_id('oss-fuzz')
     self.assertEqual(datetime.date(2021, 1, 1), source_repo.last_update_date)
 
-  @mock.patch('google.cloud.pubsub_v1.PublisherClient.publish')
-  def test_scheduled_updates_already_done(self, mock_publish):
+  def test_scheduled_updates_already_done(self):
     """Scheduled updates already done."""
     source_repo = osv.SourceRepository.get_by_id('oss-fuzz')
     source_repo.last_update_date = importer.utcnow().date()
     source_repo.put()
 
-    self.mock_repo.add_file('proj/OSV-2021-1337.yaml', _EMPTY_VULNERABILITY)
+    self.mock_repo.add_file('proj/OSV-2021-1337.yaml', _MIN_VALID_VULNERABILITY)
     self.mock_repo.commit('OSV', 'infra@osv.dev')
     osv.Bug(
         db_id='OSV-2021-1337',
@@ -314,71 +332,29 @@ class ImporterTest(unittest.TestCase, tests.ExpectationTest(TEST_DATA_DIR)):
         timestamp=datetime.datetime(2020, 1, 1, 0, 0, 0, 0)).put()
 
     imp = importer.Importer('fake_public_key', 'fake_private_key', self.tmp_dir,
-                            'bucket')
+                            importer.DEFAULT_PUBLIC_LOGGING_BUCKET, 'bucket',
+                            True)
     imp.run()
 
-    self.assertEqual(0, mock_publish.call_count)
-
-  @mock.patch('google.cloud.pubsub_v1.PublisherClient.publish')
-  def test_no_updates(self, mock_publish):
+  def test_no_updates(self):
     """Test no update marker."""
-    self.mock_repo.add_file('2021-111.yaml', _EMPTY_VULNERABILITY)
+    self.mock_repo.add_file('2021-111.yaml', _MIN_VALID_VULNERABILITY)
     self.mock_repo.commit('User', 'user@email', 'message. OSV-NO-UPDATE')
 
     imp = importer.Importer('fake_public_key', 'fake_private_key', self.tmp_dir,
-                            'bucket')
+                            importer.DEFAULT_PUBLIC_LOGGING_BUCKET, 'bucket',
+                            True)
     imp.run()
-    mock_publish.assert_not_called()
 
-  @mock.patch('google.cloud.pubsub_v1.PublisherClient.publish')
-  def test_ignore(self, mock_publish):
+  def test_ignore(self):
     """Test ignoring."""
-    self.mock_repo.add_file('2021-111IGNORE.yaml', _EMPTY_VULNERABILITY)
+    self.mock_repo.add_file('2021-111IGNORE.yaml', _MIN_VALID_VULNERABILITY)
     self.mock_repo.commit('User', 'user@email', 'message.')
 
     imp = importer.Importer('fake_public_key', 'fake_private_key', self.tmp_dir,
-                            'bucket')
+                            importer.DEFAULT_PUBLIC_LOGGING_BUCKET, 'bucket',
+                            True)
     imp.run()
-    mock_publish.assert_not_called()
-
-  @mock.patch('google.cloud.pubsub_v1.PublisherClient.publish')
-  def test_ecosystem_bridge(self, mock_publish):
-    """Test ecosystem pub/sub publishing."""
-    self.source_repo.key.delete()
-    self.source_repo = osv.SourceRepository(
-        type=osv.SourceRepositoryType.GIT,
-        id='PyPI',
-        name='PyPI',
-        repo_url='file://' + self.remote_source_repo_path,
-        repo_username='')
-    self.source_repo.put()
-    self.mock_repo.add_file(
-        'PYSEC-2021-1.yaml', 'id: PYSEC-2021-1\n'
-        'affected:\n'
-        '- package:\n'
-        '    name: pkg\n'
-        '    ecosystem: PyPI\n')
-    self.mock_repo.commit('User', 'user@email')
-
-    imp = importer.Importer('fake_public_key', 'fake_private_key', self.tmp_dir,
-                            'bucket')
-    imp.run()
-    mock_publish.assert_has_calls([
-        mock.call(
-            'projects/oss-vdb/topics/tasks',
-            data=b'',
-            type='update',
-            source='PyPI',
-            path='PYSEC-2021-1.yaml',
-            original_sha256=('875811e67e3e9bb50f3442dc262583c2'
-                             '99b2d8b571e80a53af837b8f3787fa20'),
-            deleted='false'),
-        mock.call(
-            'projects/oss-vdb/topics/pypi-bridge',
-            data=b'{"id": "PYSEC-2021-1", "affected": '
-            b'[{"package": {"name": "pkg", "ecosystem": "PyPI"}, '
-            b'"versions": []}]}')
-    ])
 
 
 @mock.patch('importer.utcnow', lambda: datetime.datetime(2021, 1, 1))
@@ -400,18 +376,50 @@ class BucketImporterTest(unittest.TestCase):
         extension='.json')
     self.source_repo.put()
 
+    osv.Bug(
+        id='DSA-3029-1',
+        db_id='DSA-3029-1',
+        status=1,
+        source='test',
+        public=True,
+        affected_packages=[{
+            'package': {
+                'ecosystem': 'Debian:7',
+                'name': 'test',
+            },
+        }],
+        # Same timestamp as the DSA-3029-1 modified file
+        import_last_modified=datetime.datetime(2014, 9, 20, 8, 18, 7, 0),
+    ).put()
+
+    self.tasks_topic = f'projects/{tests.TEST_PROJECT_ID}/topics/tasks'
+
   def tearDown(self):
     shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
+  @mock.patch('google.cloud.storage.Blob.upload_from_string')
   @mock.patch('google.cloud.pubsub_v1.PublisherClient.publish')
-  def test_bucket(self, mock_publish):
+  def test_bucket(self, mock_publish: mock.MagicMock,
+                  upload_from_str: mock.MagicMock):
     """Test bucket updates."""
+
     imp = importer.Importer('fake_public_key', 'fake_private_key', self.tmp_dir,
-                            'bucket')
+                            importer.DEFAULT_PUBLIC_LOGGING_BUCKET, 'bucket',
+                            True)
+
     imp.run()
     mock_publish.assert_has_calls([
         mock.call(
-            'projects/oss-vdb/topics/tasks',
+            self.tasks_topic,
+            data=b'',
+            type='update',
+            source='bucket',
+            path='a/b/android-test.json',
+            original_sha256=('12453f85cd87bc1d465e0d013db572c0'
+                             '1f7fb7de3b3a33de94ebcc7bd0f23a14'),
+            deleted='false'),
+        mock.call(
+            self.tasks_topic,
             data=b'',
             type='update',
             source='bucket',
@@ -420,6 +428,75 @@ class BucketImporterTest(unittest.TestCase):
                              'a408735f1c2502ee8fa08745096e1971'),
             deleted='false'),
     ])
+
+    # Test this entry is not published
+    dsa_call = mock.call(
+        self.tasks_topic,
+        data=b'',
+        type='update',
+        source='bucket',
+        path='a/b/DSA-3029-1.json',
+        original_sha256=mock.ANY,
+        deleted='false')
+    assert dsa_call not in mock_publish.mock_calls
+
+    # Test invalid entry is not published
+    invalid_call = mock.call(
+        self.tasks_topic,
+        data=b'',
+        type='update',
+        source='bucket',
+        path='a/b/test-invalid.json',
+        original_sha256=mock.ANY,
+        deleted=mock.ANY)
+    assert invalid_call not in mock_publish.mock_calls
+    # Check if uploaded log str has the failed to parse vuln
+    any('Failed to parse vulnerability "a/b/test-invalid.json"' in x[0][0]
+        for x in upload_from_str.call_args_list)
+
+  @mock.patch('google.cloud.storage.Blob.upload_from_string')
+  @mock.patch('google.cloud.pubsub_v1.PublisherClient.publish')
+  def test_import_override(self, mock_publish: mock.MagicMock,
+                           upload_from_str: mock.MagicMock):
+    """Test bucket updates."""
+
+    self.source_repo.ignore_last_import_time = True
+    self.source_repo.put()
+
+    imp = importer.Importer('fake_public_key', 'fake_private_key', self.tmp_dir,
+                            importer.DEFAULT_PUBLIC_LOGGING_BUCKET, 'bucket',
+                            True)
+
+    imp.run()
+
+    mock_publish.assert_has_calls([
+        mock.call(
+            self.tasks_topic,
+            data=b'',
+            type='update',
+            source='bucket',
+            path='a/b/DSA-3029-1.json',
+            original_sha256=mock.ANY,
+            deleted='false')
+    ])
+    mock_publish.reset_mock()
+
+    # Second run should not import it again, since each import run resets the
+    # value of source_repo.ignore_last_import_time to False
+    imp.run()
+
+    dsa_call = mock.call(
+        self.tasks_topic,
+        data=b'',
+        type='update',
+        source='bucket',
+        path='a/b/DSA-3029-1.json',
+        original_sha256=mock.ANY,
+        deleted='false')
+    assert dsa_call not in mock_publish.mock_calls
+    # Check if uploaded log str has the failed to parse vuln
+    any('Failed to parse vulnerability "a/b/test-invalid.json"' in x[0][0]
+        for x in upload_from_str.call_args_list)
 
 
 if __name__ == '__main__':

@@ -1,2 +1,7 @@
 *.pyc
 __pycache__/
+.idea/
+*.egg-info
+build/lib
+.vscode
+*.tfstate*

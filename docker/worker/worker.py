@@ -19,13 +19,14 @@ import json
 import logging
 import os
 import math
+import re
+import redis
 import resource
 import shutil
 import subprocess
 import sys
 import threading
 import time
-import traceback
 
 import google.cloud.exceptions
 from google.cloud import ndb
@@ -35,6 +36,7 @@ from google.cloud import storage
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import osv
 import osv.ecosystems
+import osv.cache
 from osv import vulnerability_pb2
 import oss_fuzz
 
@@ -55,7 +57,30 @@ REPO_DENYLIST = {
     'https://github.com/google/AFL.git',
 }
 
+_ECOSYSTEM_PUSH_TOPICS = {
+    'PyPI': 'pypi-bridge',
+}
+
 _state = threading.local()
+
+
+class RedisCache(osv.cache.Cache):
+  """Redis cache implementation."""
+
+  redis_instance: redis.client.Redis
+
+  def __init__(self, host, port):
+    self.redis_instance = redis.Redis(host, port)
+
+  def get(self, key):
+    try:
+      return json.loads(self.redis_instance.get(json.dumps(key)))
+    except Exception:
+      # TODO(ochang): Remove this after old cache entries are flushed.
+      return None
+
+  def set(self, key, value, ttl):
+    return self.redis_instance.set(json.dumps(key), json.dumps(value), ex=ttl)
 
 
 class UpdateConflictError(Exception):
@@ -150,8 +175,8 @@ class _PubSubLeaserThread(threading.Thread):
         if self._done_event.wait(wait_seconds):
           logging.info('Task complete, stopping renewal.')
           break
-      except Exception as e:
-        logging.error('Leaser thread failed: %s', str(e))
+      except Exception:
+        logging.exception('Leaser thread failed: ')
 
 
 def clean_artifacts(oss_fuzz_dir):
@@ -199,13 +224,22 @@ def add_fix_information(vulnerability, fix_result):
 
   for affected_package in vulnerability.affected:
     added_fix = False
+
+    # Count unique repo URLs.
+    repos = set()
+    for affected_range in affected_package.ranges:
+      if affected_range.type == vulnerability_pb2.Range.GIT:
+        repos.add(affected_range.repo)
+
     for affected_range in affected_package.ranges:
       if affected_range.type != vulnerability_pb2.Range.GIT:
         continue
 
       # If this range does not include the fixed commit, add it.
-      # Use the repo URL to key on if the fix commit needs to be added.
-      if (fix_result.repo_url == affected_range.repo and
+      # Do this if:
+      #   - There is only one repo URL in the entire vulnerability, or
+      #   - The repo URL matches the FixResult repo URL.
+      if ((fix_result.repo_url == affected_range.repo or len(repos) == 1) and
           not any(event.fixed == fix_commit
                   for event in affected_range.events)):
         added_fix = True
@@ -222,8 +256,14 @@ def add_fix_information(vulnerability, fix_result):
 
 # TODO(ochang): Remove this function once GHSA's encoding is fixed.
 def fix_invalid_ghsa(vulnerability):
-  """Attempt to fix an invalid GHSA entry and returns whether the GHSA
-  entry is valid."""
+  """Attempt to fix an invalid GHSA entry.
+
+  Args:
+    vulnerability: a vulnerability object.
+
+  Returns:
+    whether the GHSA entry is valid.
+  """
   packages = {}
   for affected in vulnerability.affected:
     details = packages.setdefault(
@@ -263,6 +303,27 @@ def fix_invalid_ghsa(vulnerability):
       return False
 
   return True
+
+
+def maybe_normalize_package_names(vulnerability):
+  """Normalize package names as necessary."""
+  for affected in vulnerability.affected:
+    if affected.package.ecosystem == 'PyPI':
+      # per https://peps.python.org/pep-0503/#normalized-names
+      affected.package.name = re.sub(r'[-_.]+', '-',
+                                     affected.package.name).lower()
+
+  return vulnerability
+
+
+def filter_unsupported_ecosystems(vulnerability):
+  """Remove unsupported ecosystems from vulnerability."""
+  filtered = []
+  for affected in vulnerability.affected:
+    if osv.ecosystems.get(affected.package.ecosystem):
+      filtered.append(affected)
+  del vulnerability.affected[:]
+  vulnerability.affected.extend(filtered)
 
 
 class TaskRunner:
@@ -314,8 +375,8 @@ class TaskRunner:
       try:
         vulnerabilities = osv.parse_vulnerabilities(
             vuln_path, key_path=source_repo.key_path)
-      except Exception as e:
-        logging.error('Failed to parse vulnerability %s: %s', vuln_path, e)
+      except Exception:
+        logging.exception('Failed to parse vulnerability %s:', vuln_path)
         return
 
       current_sha256 = osv.sha256(vuln_path)
@@ -325,7 +386,7 @@ class TaskRunner:
       try:
         blob = bucket.blob(path).download_as_bytes()
       except google.cloud.exceptions.NotFound:
-        logging.error('Bucket path %s does not exist.', path)
+        logging.exception('Bucket path %s does not exist.', path)
         return
 
       current_sha256 = osv.sha256_bytes(blob)
@@ -334,8 +395,8 @@ class TaskRunner:
             blob,
             extension=os.path.splitext(path)[1],
             key_path=source_repo.key_path)
-      except Exception as e:
-        logging.error('Failed to parse vulnerability %s: %s', path, e)
+      except Exception:
+        logging.exception('Failed to parse vulnerability %s', path)
         return
 
       repo = None
@@ -420,10 +481,14 @@ class TaskRunner:
                  original_sha256):
     """Process updates on a vulnerability."""
     logging.info('Processing update for vulnerability %s', vulnerability.id)
+    vulnerability = maybe_normalize_package_names(vulnerability)
     if source_repo.name == 'ghsa' and not fix_invalid_ghsa(vulnerability):
       logging.warning('%s has an encoding error, skipping.', vulnerability.id)
       return
 
+    filter_unsupported_ecosystems(vulnerability)
+
+    orig_modified_date = vulnerability.modified.ToDatetime()
     try:
       result = self._analyze_vulnerability(source_repo, repo, vulnerability,
                                            relative_path, original_sha256)
@@ -446,6 +511,7 @@ class TaskRunner:
 
     bug.update_from_vulnerability(vulnerability)
     bug.public = True
+    bug.import_last_modified = orig_modified_date
 
     # OSS-Fuzz sourced bugs use a different format for source_id.
     if source_repo.name != 'oss-fuzz' or not bug.source_id:
@@ -456,8 +522,32 @@ class TaskRunner:
     else:
       bug.status = osv.BugStatus.PROCESSED
 
+    if not vulnerability.affected:
+      logging.info('%s does not affect any packages. Marking as invalid.',
+                   vulnerability.id)
+      bug.status = osv.BugStatus.INVALID
+
     bug.put()
     osv.update_affected_commits(bug.key.id(), result.commits, bug.public)
+    self._notify_ecosystem_bridge(vulnerability)
+
+  def _notify_ecosystem_bridge(self, vulnerability):
+    """Notify ecosystem bridges."""
+    ecosystems = set()
+    for affected in vulnerability.affected:
+      if affected.package.ecosystem in ecosystems:
+        continue
+
+      ecosystems.add(affected.package.ecosystem)
+      ecosystem_push_topic = _ECOSYSTEM_PUSH_TOPICS.get(
+          affected.package.ecosystem)
+      if ecosystem_push_topic:
+        publisher = pubsub_v1.PublisherClient()
+        cloud_project = os.environ['GOOGLE_CLOUD_PROJECT']
+        push_topic = publisher.topic_path(cloud_project, ecosystem_push_topic)
+        publisher.publish(
+            push_topic,
+            data=json.dumps(osv.vulnerability_to_dict(vulnerability)).encode())
 
   def _do_process_task(self, subscriber, subscription, ack_id, message,
                        done_event):
@@ -475,8 +565,7 @@ class TaskRunner:
           try:
             oss_fuzz.process_impact_task(source_id, message)
           except osv.ImpactError:
-            logging.error('Failed to process impact: %s',
-                          traceback.format_exc())
+            logging.exception('Failed to process impact: ')
         elif task_type == 'invalid':
           mark_bug_invalid(message)
         elif task_type == 'update':
@@ -485,8 +574,7 @@ class TaskRunner:
         _state.source_id = None
         subscriber.acknowledge(subscription=subscription, ack_ids=[ack_id])
     except Exception:
-      logging.error('Unexpected exception while processing task: %s',
-                    traceback.format_exc())
+      logging.exception('Unexpected exception while processing task: ',)
       subscriber.modify_ack_deadline(
           subscription=subscription, ack_ids=[ack_id], ack_deadline_seconds=0)
     finally:
@@ -564,11 +652,20 @@ def main():
   parser.add_argument('--deps_dev_api_key', help='deps.dev API key')
   parser.add_argument('--ssh_key_public', help='Public SSH key path')
   parser.add_argument('--ssh_key_private', help='Private SSH key path')
+  parser.add_argument(
+      '--redis_host', help='URL to redis instance, enables redis cache')
+  parser.add_argument(
+      '--redis_port', default=6379, help='Port of redis instance')
   args = parser.parse_args()
 
   if args.deps_dev_api_key:
     osv.ecosystems.use_deps_dev = True
     osv.ecosystems.deps_dev_api_key = args.deps_dev_api_key
+
+  if args.redis_host:
+    osv.ecosystems.set_cache(RedisCache(args.redis_host, args.redis_port))
+
+  osv.ecosystems.work_dir = args.work_dir
 
   # Work around kernel bug: https://gvisor.dev/issue/1765
   resource.setrlimit(resource.RLIMIT_MEMLOCK,

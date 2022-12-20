@@ -1,34 +1,56 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/png" href="/static/img/favicon-32x32.png" sizes="32x32">
+  <link rel="icon" type="image/png" href="/static/img/favicon-16x16.png" sizes="16x16">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css?family=Material+Icons&display=block" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/css2?family=Google+Material+Icons:wght@400;500;700" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Overpass+Mono:wght@400;700&family=Overpass:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
   <meta charset="utf-8">
-  <title>OSV</title>
+  <title id="title">OSV</title>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-ZXG9G6HTBR"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'G-ZXG9G6HTBR', { 'anonymize_ip': true });
+  </script>
 </head>
 <body>
-  <aside class="wip-notice">
-    <p>Super <strong>work in progress</strong> website! Feel free to take a look, but you probably want to be using the
-    <a href="{{ url_for('frontend_handlers.index') }}" data-turbo="false">current version</a> instead!</p>
-  </aside>
-  <header class="top-bar">
-    <div class="logo">
-      <a href="{{ url_for('frontend_handlers.index_v2') }}">
-        <img src="/static/img/logo.png" srcset="/static/img/logo.png, /static/img/logo@2x.png 2x">
-      </a>
-    </div>
-    <ul class="tabs">
-      <li class="{{ 'active' if active_section == 'vulnerabilities' else '' }}">
-        <a href="{{ url_for('frontend_handlers.list_vulnerabilities') }}">Vulnerability Database</a>
-      </li>
-      <li class="{{ 'active' if active_section == 'about' else '' }}">
-        <a href="{{ url_for('frontend_handlers.about') }}">About OSV</a>
-      </li>
-    </ul>
-  </header>
-  {% block content %}{% endblock %}
+  <div class="wrapper {{'decorated' if active_section == 'home'}}">
+    <header class="top-bar">
+      <div class="logo">
+        <a href="{{ url_for('frontend_handlers.index') }}">
+          <img src="/static/img/logo.png" srcset="/static/img/logo.png, /static/img/logo@2x.png 2x">
+        </a>
+      </div>
+
+      <!-- Hidden checkbox for hamburger menu state -->
+      <input type="checkbox" id="hamburger-checkbox">
+      <!-- Hamburger menu -->
+      <label class="hamburger" for="hamburger-checkbox">
+        <span></span>
+        <span></span>
+        <span></span>
+      </label>
+
+      <ul class="tabs">
+        <li class="{{ 'active' if active_section == 'vulnerabilities' else '' }}">
+          <a href="{{ url_for('frontend_handlers.list_vulnerabilities') }}">Vulnerability Database</a>
+        </li>
+        <li class="{{ 'active' if active_section == 'blog' else '' }}">
+          <a href="{{ url_for('frontend_handlers.blog') }}">Blog</a>
+        </li>
+        <li class="{{ 'active' if active_section == 'about' else '' }}">
+          <a href="{{ url_for('frontend_handlers.about') }}">About</a>
+        </li>
+      </ul>
+    </header>
+    {% block content %}{% endblock %}
+  </div>
 </body>
 </html>

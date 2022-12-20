@@ -13,14 +13,21 @@
 # limitations under the License.
 """Handlers for the OSV web frontend."""
 
+import json
 import os
+import math
+import re
 
 from flask import abort
+from flask import current_app
 from flask import Blueprint
-from flask import jsonify
 from flask import make_response
+from flask import redirect
 from flask import render_template
 from flask import request
+from flask import url_for
+import markdown2
+from urllib import parse
 
 import cache
 import osv
@@ -30,10 +37,11 @@ import utils
 
 blueprint = Blueprint('frontend_handlers', __name__)
 
-_BACKEND_ROUTE = '/backend'
 _PAGE_SIZE = 16
 _PAGE_LOOKAHEAD = 4
 _REQUESTS_PER_MIN = 30
+_VALID_BLOG_NAME = re.compile(r'^[\w-]+$')
+_BLOG_CONTENTS_DIR = 'blog'
 
 if utils.is_prod():
   redis_host = os.environ.get('REDISHOST', 'localhost')
@@ -46,6 +54,17 @@ if utils.is_prod():
     ip_addr = request.headers.get('X-Appengine-User-Ip', 'unknown')
     if not limiter.check_request(ip_addr):
       abort(429)
+
+
+def _load_blog_content(name):
+  """Load blog content."""
+  path = os.path.join(current_app.static_folder, _BLOG_CONTENTS_DIR, name)
+  if not os.path.exists(path):
+    abort(404)
+    return None
+
+  with open(path) as handle:
+    return handle.read()
 
 
 @blueprint.before_request
@@ -68,26 +87,63 @@ def add_cors_headers(response):
   return response
 
 
-@blueprint.route('/')
-def index():
-  """Main page."""
-  return render_template('index.html')
-
-
 @blueprint.route('/v2/')
 def index_v2():
+  return redirect('/')
+
+
+@blueprint.route('/v2/<path:subpath>')
+def index_v2_with_subpath(subpath):
+  return redirect('/' + subpath)
+
+
+@blueprint.route('/')
+def index():
   return render_template(
-      'home.html', ecosystem_counts=osv_get_ecosystem_counts())
+      'home.html', ecosystem_counts=osv_get_ecosystem_counts_cached())
 
 
-@blueprint.route('/v2/about')
+@blueprint.route('/blog/', strict_slashes=False)
+def blog():
+  return render_template('blog.html', index=_load_blog_content('index.html'))
+
+
+@blueprint.route('/blog/index.xml')
+def blog_rss():
+  return current_app.send_static_file(
+      os.path.join(_BLOG_CONTENTS_DIR, 'index.xml'))
+
+
+@blueprint.route('/blog/posts/<blog_name>/', strict_slashes=False)
+def blog_post(blog_name):
+  if not _VALID_BLOG_NAME.match(blog_name):
+    abort(404)
+    return None
+
+  return render_template(
+      'blog_post.html',
+      content=_load_blog_content(
+          os.path.join('posts', blog_name, 'index.html')))
+
+
+@blueprint.route('/about')
 def about():
   return render_template('about.html')
 
 
-@blueprint.route('/v2/list')
+@blueprint.route('/list')
 def list_vulnerabilities():
   """Main page."""
+  is_turbo_frame = request.headers.get('Turbo-Frame')
+
+  # Remove page parameter if not from turbo frame
+  if not is_turbo_frame:
+    if request.args.get('page', 1) != 1:
+      q = parse.parse_qs(request.query_string)
+      q.pop(b'page', None)
+      return redirect(
+          url_for(request.endpoint) + '?' + parse.urlencode(q, True))
+
   query = request.args.get('q', '')
   page = int(request.args.get('page', 1))
   ecosystem = request.args.get('ecosystem')
@@ -95,19 +151,20 @@ def list_vulnerabilities():
 
   # Fetch ecosystems by default. As an optimization, skip when rendering page
   # fragments.
-  ecosystem_counts = osv_get_ecosystem_counts(
-  ) if not request.headers.get('Turbo-Frame') else None
+  ecosystem_counts = osv_get_ecosystem_counts_cached(
+  ) if not is_turbo_frame else None
 
   return render_template(
       'list.html',
       page=page,
+      total_pages=math.ceil(results['total'] / _PAGE_SIZE),
       query=query,
       selected_ecosystem=ecosystem,
       ecosystem_counts=ecosystem_counts,
       vulnerabilities=results['items'])
 
 
-@blueprint.route('/v2/vulnerability/<vuln_id>')
+@blueprint.route('/vulnerability/<vuln_id>')
 def vulnerability(vuln_id):
   """Vulnerability page."""
   vuln = osv_get_by_id(vuln_id)
@@ -125,6 +182,7 @@ def bug_to_response(bug, detailed=True):
   if detailed:
     add_links(response)
     add_source_info(bug, response)
+    add_related_aliases(bug, response)
   return response
 
 
@@ -171,6 +229,40 @@ def add_source_info(bug, response):
   response['source_link'] = response['source']
 
 
+def add_related_aliases(bug: osv.Bug, response):
+  """Add links to other osv entries that's related through aliases"""
+  # Add links to other entries if they exist
+  aliases = {}
+  if bug.aliases:
+    directly_refed = osv.Bug.query(osv.Bug.db_id.IN(bug.aliases))
+    is_directly_refed = {dr.db_id for dr in directly_refed}
+    for alias in bug.aliases:
+      aliases[alias] = {
+          'exists': alias in is_directly_refed,
+          'same_alias_entries': []
+      }
+
+  # Add links to other entries that have the same alias or references this
+  query = osv.Bug.query(osv.Bug.aliases.IN(bug.aliases + [bug.id()]))
+  for other in query:
+    if other.id() == bug.id():
+      continue
+    for other_alias in other.aliases:
+      if other_alias in aliases:
+        aliases[other_alias]['same_alias_entries'].append(other.id())
+    if bug.id() in other.aliases:
+      aliases[other.id()] = {'exists': True, 'same_alias_entries': []}
+
+  # Remove self if it was added
+  aliases.pop(bug.id(), None)
+
+  response['aliases'] = [{
+      'alias_id': aid,
+      'exists': ex['exists'],
+      'same_alias_entries': ex['same_alias_entries']
+  } for aid, ex in aliases.items()]
+
+
 def _commit_to_link(repo_url, commit):
   """Convert commit to link."""
   vcs = source_mapper.get_vcs_viewer_for_url(repo_url)
@@ -194,19 +286,35 @@ def _commit_to_link(repo_url, commit):
 def osv_get_ecosystems():
   """Get list of ecosystems."""
   query = osv.Bug.query(projection=[osv.Bug.ecosystem], distinct=True)
-  return sorted([bug.ecosystem[0] for bug in query if bug.ecosystem])
+  return sorted([bug.ecosystem[0] for bug in query if bug.ecosystem],
+                key=str.lower)
 
 
+# TODO: Figure out how to skip cache when testing
 @cache.instance.cached(
     timeout=24 * 60 * 60, key_prefix='osv_get_ecosystem_counts')
+def osv_get_ecosystem_counts_cached():
+  """Get count of vulnerabilities per ecosystem, cached"""
+  return osv_get_ecosystem_counts()
+
+
 def osv_get_ecosystem_counts():
   """Get count of vulnerabilities per ecosystem."""
   counts = {}
   ecosystems = osv_get_ecosystems()
   for ecosystem in ecosystems:
-    counts[ecosystem] = osv.Bug.query(osv.Bug.ecosystem == ecosystem).count()
+    if ':' in ecosystem:
+      # Count by the base ecosystem index. Otherwise we'll overcount as a
+      # single entry may refer to multiple sub-ecosystems.
+      continue
 
-  return counts
+    counts[ecosystem] = osv.Bug.query(
+        osv.Bug.ecosystem == ecosystem,
+        osv.Bug.public == True,  # pylint: disable=singleton-comparison
+        osv.Bug.status == osv.BugStatus.PROCESSED).count()
+
+  filtered_counts = {key: elem for key, elem in counts.items() if elem > 0}
+  return filtered_counts
 
 
 def osv_query(search_string, page, affected_only, ecosystem):
@@ -260,31 +368,94 @@ def osv_get_by_id(vuln_id):
   return bug_to_response(bug)
 
 
-@blueprint.route(_BACKEND_ROUTE + '/ecosystems')
-def ecosystems_handler():
-  """Handle query for list of ecosystems."""
-  return jsonify(osv_get_ecosystems())
+@blueprint.app_template_filter('event_type')
+def event_type(event):
+  """Get the type from an event."""
+  if event.get('introduced'):
+    return 'Introduced'
+  if event.get('fixed'):
+    return 'Fixed'
+  if event.get('limit'):
+    return 'Limit'
+  if event.get('last_affected'):
+    return 'Last affected'
+
+  return None
 
 
-@blueprint.route(_BACKEND_ROUTE + '/ecosystem-counts')
-def ecosystem_counts_handler():
-  """Handle query for list of ecosystems."""
-  return jsonify(osv_get_ecosystem_counts())
+@blueprint.app_template_filter('event_link')
+def event_link(event):
+  """Get the link from an event."""
+  if event.get('introduced_link'):
+    return event['introduced_link']
+  if event.get('fixed_link'):
+    return event['fixed_link']
+  if event.get('limit_link'):
+    return event['limit_link']
+  if event.get('last_affected_link'):
+    return event['last_affected_link']
+
+  return None
 
 
-@blueprint.route(_BACKEND_ROUTE + '/query')
-def query_handler():
-  """Handle a query."""
-  search_string = request.args.get('search')
-  page = int(request.args.get('page', 1))
-  affected_only = request.args.get('affected_only') == 'true'
-  ecosystem = request.args.get('ecosystem')
-  results = osv_query(search_string, page, affected_only, ecosystem)
-  return jsonify(results)
+@blueprint.app_template_filter('event_value')
+def event_value(event):
+  """Get the value from an event."""
+  if event.get('introduced'):
+    return event['introduced']
+  if event.get('fixed'):
+    return event['fixed']
+  if event.get('limit'):
+    return event['limit']
+  if event.get('last_affected'):
+    return event['last_affected']
+
+  return None
 
 
-@blueprint.route(_BACKEND_ROUTE + '/vulnerability')
-def vulnerability_handler():
-  """Handle a vulnerability request."""
-  vuln_id = request.args.get('id')
-  return jsonify(osv_get_by_id(vuln_id))
+@blueprint.app_template_filter('should_collapse')
+def should_collapse(affected):
+  """Whether if we should collapse the package tab bar."""
+  total_package_length = sum(
+      len(entry.get('package', {}).get('name', '')) for entry in affected)
+  return total_package_length > 70 or len(affected) > 5
+
+
+@blueprint.app_template_filter('group_versions')
+def group_versions(versions):
+  """Group versions by prefix."""
+  groups = {}
+
+  for version in sorted(versions):
+    if '.' not in version:
+      groups.setdefault('Other', []).append(version)
+      continue
+
+    label = version.split('.')[0] + '.*'
+    groups.setdefault(label, []).append(version)
+
+  return groups
+
+
+@blueprint.app_template_filter('markdown')
+def markdown(text):
+  """Render markdown."""
+  if text:
+    return markdown2.markdown(
+        text, safe_mode='escape', extras=['fenced-code-blocks'])
+
+  return ''
+
+
+@blueprint.app_template_filter('display_json')
+def display_json(data):
+  # We can't use the default `tojson` filter as it's intended for code (and
+  # escapes characters like '<' to '\u003c'). We want to render the JSON for
+  # display purposes and use HTML escaping ('&lt;') instead so it's rendered
+  # as '<'.
+  return json.dumps(data, indent=4)
+
+
+@blueprint.app_template_filter('log')
+def logarithm(n):
+  return math.log(n)

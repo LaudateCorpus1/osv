@@ -4,18 +4,15 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
+jsonschema = "*"
 google-cloud-pubsub = "*"
-google-cloud-datastore = "*"
 google-cloud-logging = "*"
 google-cloud-ndb = "*"
-pygit2 = "*"
 PyYAML = "*"
 google-cloud-storage = "*"
+redis = "*"
+osv = {editable = true, path = "./../.."}
 
 [dev-packages]
 yapf = "*"
 pylint = "*"
-
-[packages.e01afd4]
-path = "./lib"
-editable = true

@@ -1,0 +1,20 @@
+[[source]]
+url = "https://pypi.python.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+google-cloud-ndb = "<2.0.0"
+semver = "*"
+pyyaml = "*"
+pygit2 = ">=1.9.2"
+attrs = "*"
+jsonschema = "*"
+grpcio = "*"
+packaging = "*"
+
+[dev-packages]
+yapf = "*"
+pylint = "*"
+pipenv = ">=2022.9.4"
+grpcio-tools = "*"

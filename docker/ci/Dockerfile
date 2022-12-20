@@ -16,7 +16,16 @@ FROM gcr.io/oss-vdb/worker
 
 RUN apt-get update && \
     apt-get install -y \
-        google-cloud-sdk-datastore-emulator
+        wget \
+        google-cloud-sdk-datastore-emulator \
+        openjdk-11-jre  # Needed for Datastore emulator.
 
 COPY daemon.json /etc/docker/daemon.json
+COPY install_go.sh /tmp/install_go.sh
+
+RUN "/tmp/install_go.sh" "/tmp"
+ENV PATH "$PATH:/root/.go/bin:/root/go/bin"
+
+RUN go install -tags extended github.com/gohugoio/hugo@v0.107.0
+
 ENTRYPOINT []

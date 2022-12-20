@@ -1,0 +1,1 @@
+`osv-scanner` has been moved to it's own repository at: https://github.com/google/osv-scanner

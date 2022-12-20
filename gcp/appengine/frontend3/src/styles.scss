@@ -3,10 +3,17 @@
 $osv-background: #292929;
 $osv-text-color: #fff;
 $osv-accent-color: #c5221f;
+$osv-accent-color-hover: #c5221fb2;
 $osv-red-300: #ec928e;
 $osv-grey-600: #80868b;
+$osv-grey-800: #3C4043;
 $osv-body-font-family: string.unquote('Overpass, sans-serif');
 $osv-heading-font-family: string.unquote('"Overpass Mono", monospace');
+$osv-heading-size: 60px;
+$osv-heading-size-mobile: 40px;
+$osv-heading-line-height: 70px;
+$osv-heading-line-height-mobile: 50px;
+$osv-mobile-breakpoint: 500px;
 
 @use '@material/theme' with (
   $surface: $osv-background,
@@ -38,6 +45,7 @@ $osv-heading-font-family: string.unquote('"Overpass Mono", monospace');
 
 html, body {
   height: 100%;
+  scroll-behavior: smooth;
 }
 
 ol, ul, menu {
@@ -73,7 +81,7 @@ a {
   text-decoration: underline;
 }
 
-a:not([href^="https://osv.dev"]):not([href^="/"])::after {
+a:not([href^="https://osv.dev"]):not([href^="/"]):not([href^="#"])::after {
   display: inline-block;
   content: ' ';
   background-image: url('/static/img/external-link.svg');
@@ -102,48 +110,128 @@ pre {
   text-decoration: none;
 }
 
-/** WIP notice */
-
-.wip-notice {
-  display: flex;
-  align-items: center;
-  height: 30px;
-  width: 100%;
-  background: #b31412;
-  color: #fff;
-  justify-content: center;
-  top: 0;
-  z-index: 999;
+.link-button:hover {
+  background: $osv-accent-color-hover;
 }
 
 /** Top bar */
 
 .top-bar {
+  $left-padding: 40px;
   display: flex;
-  padding: 34px 40px;
+  padding: 34px $left-padding;
 
   .logo {
     $logo-width: 53px;
-    flex: 1 0 ($logo-width + 40px);
+    flex: 1 0 ($logo-width + $left-padding);
     max-width: $logo-width + 112px;
+
+    // Keep logo visible.
+    z-index: 3;
   }
 
-  .tabs {
-    display: flex;
-    list-style: none;
-    margin: 0;
-    gap: 40px;
-    font-size: 16px;
+  #hamburger-checkbox {
+    opacity: 0;
+  }
 
-    li {
-      $active-spacing: 6px;
-      margin: -$active-spacing 0;
-      padding: $active-spacing 0;
+  @media (min-width: $osv-mobile-breakpoint+1) {
+    .tabs {
+      display: flex;
+      list-style: none;
+      margin: 0;
+      gap: 40px;
+      font-size: 16px;
+
+      li {
+        $active-spacing: 6px;
+        margin: -$active-spacing 0;
+        padding: $active-spacing 0;
+        border-bottom: 8px solid #fff0;
+        a {
+          text-decoration: none;
+        }
+        &.active {
+          border-bottom: 8px solid $osv-text-color;
+        }
+        &:hover {
+          border-bottom: 8px solid $osv-text-color;
+          opacity: 70%;
+        }
+      }
+    }
+    .hamburger {
+      display: none;
+    }
+  }
+
+  @media (max-width: $osv-mobile-breakpoint) {
+    .hamburger {
+      display: block;
+      position: absolute;
+      right: 30px;
+
+      // Keep hamburger on top and clickable.
+      z-index: 3;
+
+      // Individual hamburger bars.
+      span {
+        display: block;
+        background: $osv-text-color;
+        width: 16px;
+        height: 3px;
+        margin-bottom: 2px;
+        transition: all 0.5s ease;
+      }
+    }
+
+    .tabs {
       a {
         text-decoration: none;
       }
-      &.active {
-        border-bottom: 8px solid $osv-text-color;
+
+      li {
+        $active-spacing: 6px;
+        padding: $active-spacing 0;
+      }
+
+      z-index: 2;
+
+      background: $osv-grey-800;
+      opacity: 95%;
+
+      position: fixed;
+      top: 0;
+      left: 0;
+      padding-top: 70px;
+
+      padding-left: $left-padding;
+      padding-right: $left-padding;
+
+      font-size: 20px;
+      width: 100%;
+      height: 100%;
+
+      transform: translateY(-100%);
+      transition: transform 0.5s ease;
+    }
+
+    // Show menu when clicked.
+    #hamburger-checkbox:checked {
+      ~ .tabs {
+        transform: translateY(0%);
+        transition: transform 0.5s ease;
+      }
+
+      ~ .hamburger span:nth-child(1) {
+        transform: translateY(4px) rotate(45deg);
+      }
+
+      ~ .hamburger span:nth-child(2) {
+        opacity: 0;
+      }
+
+      ~ .hamburger span:nth-child(3) {
+        transform: translateY(-6px) rotate(-45deg);
       }
     }
   }
@@ -156,13 +244,48 @@ pre {
     font-size: 20px;
   }
 
-  .ecosystems {
+  .ecosystem-buttons {
     margin-top: 20px;
     display: flex;
     flex-wrap: wrap;
     gap: 10px;
     align-items: center;
-  
+
+    // We use <spicy-sections> to collapse the ecosystem list only on mobile.
+    // On desktop, display the full list.
+    --const-mq-affordances:
+      [screen and (max-width: #{$osv-mobile-breakpoint}) ] collapse;
+    &::part(tab-bar) {
+      // The tab bar affordance isn't used, so hide it.
+      display: none;
+    }
+    &::part(content-panels) {
+      // Because the shadow root of <spicy-sections> actually wraps our content
+      // we need to use display: contents; in order for flex to apply as if the
+      // child elements are direct descendants of the parent flex container.
+      display: contents;
+    }
+    .spicy-content {
+      // Expanded contents also should act as if they were direct descendants
+      // of our flex container.
+      display: contents;
+    }
+
+    // Customizing the collapsing header for <spicy-sections>. We can select it
+    // by looking for the element with affordance="collapse".
+    [affordance=collapse] {
+      display: flex;
+      align-items: center;
+      // The ::before on the collapsible is used to display the chevron.
+      &::before {
+        display: block;
+        padding: 0 8px;
+        // HACK: Invert the black chevron to white. The chevron is set using
+        // background-image, so we can't use the CSS fill property on it.
+        filter: invert(100%);
+      }
+    }
+
     .ecosystem-label {
       display: flex;
       gap: 16px;
@@ -170,24 +293,24 @@ pre {
       padding: 10px 20px;
       background: #696969;
       border-radius: 999px;
-  
+
       .ecosystem-count {
         font-weight: bold;
       }
     }
-  
+
     .ecosystems-divider {
       display: block;
       margin: 0 10px;
       height: 30px;
       border-right: 1px solid $osv-grey-600;
     }
-  
+
     input[type=radio]:checked + .ecosystem-label {
       background: $osv-text-color;
       color: $osv-accent-color;
     }
-  
+
     input[type=radio] {
       display: none;
     }
@@ -243,12 +366,19 @@ mwc-icon-button.mdc-data-table__sort-icon-button {
 .vuln-table-container {
   width: 100%;
 
+  @media (max-width: $osv-mobile-breakpoint) {
+    .hide-on-mobile {
+      display: none !important;
+    }
+  }
+
   // Override MDC table styling.
   border-width: 0;
   .mdc-data-table__header-cell {
     border-bottom-color: $osv-text-color;
     border-bottom-style: solid;
     font-family: $osv-heading-font-family;
+    font-weight: bold;
   }
   .mdc-data-table__cell {
     border-bottom-style: dashed;
@@ -351,12 +481,32 @@ mwc-icon-button.mdc-data-table__sort-icon-button {
       transform: translateX(-50%);
     }
   }
+
+  .no-results {
+    font-family: $osv-heading-font-family;
+    font-weight: bold;
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 25px;
+  }
 }
 
 /** Vulnerability page */
 
-.vulnerability-page .title {
-  font-size: 60px;
+.vulnerability-page {
+  font-size: 15px;
+  .title {
+    font-size: $osv-heading-size;
+  }
+  max-width: 1200px;
+  margin: 0 auto;
+
+  @media (max-width: $osv-mobile-breakpoint) {
+    .title {
+      font-size: $osv-heading-size-mobile;
+    }
+  }
 }
 
 dl.vulnerability-details,
@@ -364,10 +514,12 @@ dl.vulnerability-details,
   display: grid;
   grid-template-columns: max-content minmax(0, auto);
   grid-row-gap: 5px;
+  gap: 8px;
 
   dt {
     grid-column: 1;
     font-weight: bold;
+    font-size: 15px;
     padding-right: 18px;
   }
 
@@ -375,8 +527,51 @@ dl.vulnerability-details,
     grid-column: 2;
   }
 
+
+  dd.details {
+    overflow-wrap: break-word;
+
+    h1, h2, h3, h4 {
+      font-family: $osv-body-font-family;
+      font-weight: bold;
+      margin-bottom: 16px;
+    }
+
+    p {
+      margin-bottom: 16px;
+    }
+
+    ol, ul {
+      margin-bottom: 16px;
+    }
+
+    ol {
+      list-style: decimal;
+    }
+
+    ul {
+      list-style: circle;
+    }
+
+    code {
+      font-family: $osv-heading-font-family;
+      background: #333;
+    }
+
+    pre {
+      background: #333;
+      padding: 8px;
+      border-radius: 8px;
+      white-space: pre;
+      overflow-x: auto;
+      margin-bottom: 16px;
+    }
+  }
+
+
   pre {
     white-space: pre-wrap;
+    overflow: auto;
   }
 
   .links {
@@ -384,11 +579,32 @@ dl.vulnerability-details,
     display: flex;
     flex-direction: column;
     gap: 10px;
+    overflow-wrap: break-word;
+  }
+
+  .aliases {
+    padding: 0;
   }
 }
 
 .vulnerability-packages-container {
-  margin-top: 80px;
+  margin-top: 50px;
+
+  .title {
+    margin-left: 20px;
+    font-size: 24px;
+    margin-bottom: 16px;
+    font-weight: bold;
+  }
+
+  // Tab bar styling.
+  --const-mq-affordances:
+    [screen and (max-width: #{$osv-mobile-breakpoint}) ] collapse |
+    [screen and (min-width: #{$osv-mobile-breakpoint+1}) ] tab-bar;
+
+  .force-collapse {
+    --const-mq-affordances: [screen] collapse;
+  }
 }
 
 .vulnerability-packages {
@@ -400,16 +616,96 @@ dl.vulnerability-details,
     padding: 16px;
   }
 
+  h3 {
+    font-family: $osv-body-font-family;
+    font-weight: bold;
+  }
+
   .subtitle {
     font-family: $osv-heading-font-family;
     font-size: 20px;
   }
 
-  // Tab bar styling.
-  --const-mq-affordances:
-    [screen] tab-bar
-  ;
-  &[affordance="tab-bar"] h2 {
+  .version-value {
+    font-family: $osv-heading-font-family;
+  }
+
+  .versions-section {
+    --const-mq-affordances: [screen] collapse;
+
+    h2.version-header::before {
+      content: '';
+      margin-right: 16px;
+      background: url(/static/img/filled-triangle.svg);
+      background-position: center;
+      transform: rotate(0deg);
+      // Make the filled triangle white.
+      filter: invert(100%);
+    }
+
+    h2.version-header[expanded]::before {
+      transform: rotate(90deg);
+    }
+
+    h2.version-header {
+      background: none;
+      font-family: $osv-heading-font-family;
+      color: #fff;
+      padding-left: 0px;
+      font-size: 16px;
+    }
+  }
+
+  .versions {
+    display: flex;
+    overflow: auto;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding-bottom: 12px;
+  }
+
+  .versions-separator {
+    border-bottom: 1px dashed #fff;
+  }
+
+  .version {
+    width: 100px;
+    overflow-wrap: break-word;
+  }
+
+  .events {
+    gap: 4px;
+  }
+
+  .specific {
+    overflow: auto;
+  }
+
+  .spicy-sections-workaround {
+    // https://github.com/tabvengers/spicy-sections/issues/64.
+    pointer-events: none;
+  }
+
+  &[affordance="collapse"] h2.package-header {
+    .vuln-ecosystem {
+      display: inline;
+      font-weight: bold;
+      text-transform: uppercase;
+    }
+    .vuln-name {
+      display: inline;
+      font-weight: normal;
+    }
+
+    &[expanded] {
+      background: #fff;
+      color: $osv-accent-color;
+    }
+
+    width: 100%;
+  }
+
+  &[affordance="tab-bar"] h2.package-header {
     cursor: default;
 
     // Default tab spacing of 20px. First tab should match grid margin.
@@ -443,7 +739,7 @@ dl.vulnerability-details,
   [role="tabpanel"] {
     border-top: 1px dashed #fff;
   }
-  
+
   .vulnerability-package-subsection {
     padding: 14px 0;
     border-bottom: 1px dashed #fff;
@@ -452,63 +748,256 @@ dl.vulnerability-details,
 
 /** Home page */
 
+.wrapper.decorated {
+  background: url('/static/img/background-1.png');
+  background-repeat: no-repeat;
+  background-position: calc(50% - 70px) top;
+}
+
+.mdc-layout-grid.home-page {
+  padding: 0;
+}
+
 .home-page {
+
+  .mdc-layout-grid__cell--span-12 {
+    margin: 0 24px;
+  }
+
+  .hero {
+    max-width: 1000px;
+    margin: 79px auto 0 auto;
+    text-align: center;
+
+    .cta {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 4px;
+    }
+  }
+
   .title {
-    font-size: 60px;
-    line-height: 70px;
+    font-size: $osv-heading-size;
+    line-height: $osv-heading-line-height;
+    margin-bottom: 12px;
+  }
+
+  @media (max-width: $osv-mobile-breakpoint) {
+    .title {
+      font-size: $osv-heading-size-mobile;
+      line-height: $osv-heading-line-height-mobile;
+    }
   }
 
   .explainer {
     font-size: 20px;
+
+    p {
+      margin-bottom: 20px;
+    }
+    margin-bottom: 24px;
   }
 
-  .google-backed::after {
-    display: inline;
-    content: 'google';
-    font-family: 'Google Material Icons';
-  }
+  .ecosystems-section {
+    $ecosystem-name-height: 30px;
+    $ecosystem-count-wrapper-height: 210px;
+    margin-left: 0;
+    margin-right: 0;
+    margin-top: 100px;
 
-  .ecosystem-counts {
-    margin-top: 130px;
+    .ecosystem-counts-wrapper {
+      position: relative;
+      background: #333;
+      margin-top: 20px;
+      height: $ecosystem-count-wrapper-height;
 
-    .ecosystems {
-      display: grid;
-      grid-template-rows: 30px 210px;
-      grid-auto-flow: column;
-      dt {
-        position: relative;
-        top: 210px;
+      .ecosystems-line-mid,
+      .ecosystems-line-0,
+      .ecosystems-line-1,
+      .ecosystems-line-2,
+      .ecosystems-line-3 {
+        width: 100%;
+        border-top: 1px dashed #a0a0a0;
+        position: absolute;
+        z-index: 1;
       }
-      dd {
+      .ecosystems-line-mid {
+        top: 105px;
+        border-top-style: solid;
+      }
+      .ecosystems-line-0 {
+        top: 0px;
+      }
+      .ecosystems-line-1 {
+        top: 52px;
+      }
+      .ecosystems-line-2 {
+        top: 157px;
+      }
+      .ecosystems-line-3 {
+        top: 207px;
+      }
+    }
+
+    .ecosystem-counts {
+      display: grid;
+      grid-template-rows: $ecosystem-name-height $ecosystem-count-wrapper-height;
+      grid-column-gap: 4px;
+      // Indeterminate number of columns of minimum 80px width.
+      grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+      // Force columns outside of available space to overflow.
+      // These do not use the value set in grid-template-columns, so set it.
+      overflow-x: auto;
+      grid-auto-flow: column;
+      grid-auto-columns: minmax(80px, 1fr);
+
+      .ecosystem-name {
         position: relative;
-        top: -30px;
-        background: #333;
-        height: 100%;
-        // Keep 1:1 ratio of child element.
-        padding-top: 100%;
+        top: $ecosystem-count-wrapper-height;
+        height: $ecosystem-name-height;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        font-family: $osv-heading-font-family;
+      }
+      .ecosystem-count-wrapper {
+        position: relative;
+        top: -$ecosystem-name-height;
+
+        a {
+          text-decoration: none;
+          color: inherit;
+        }
       }
       .ecosystem-count {
-        position: relative;
+        font-family: $osv-heading-font-family;
+        position: absolute;
         left: 50%;
         top: 50%;
         transform: translateX(-50%) translateY(-50%);
         display: block;
-        background: #ddd;
-        color: #000;
-        border-radius: 999px;
+        background: #c4c4c4;
+        color: #3c4043;
+        border-radius: 50%;
         text-align: center;
+        z-index: 1;
+
+        .tooltip {
+          display: none;
+          color: $osv-text-color;
+          position: absolute;
+          background: #11111199;
+          max-width: 250px;
+          line-height: 16px;
+          padding: 5px;
+          border-radius: 4px;
+        }
+      }
+
+      .ecosystem-count:hover {
+        background: #d4d4d4;
+        cursor: pointer;
+
+        z-index: 2;
+        .tooltip {
+          display: block;
+        }
       }
     }
+
+    .heading {
+      margin-left: 24px;
+    }
+
   }
 
-  .usage-examples {
-    margin-top: 130px;
-    margin-bottom: 120px;
+  .text-info {
+    max-width: 900px;
+    margin: 100px auto 0;
+
     .heading {
-      font-size: 60px;
+      font-size: $osv-heading-size;
       text-align: center;
       margin-bottom: 32px;
     }
+
+    @media (max-width: $osv-mobile-breakpoint) {
+      .heading {
+        font-size: $osv-heading-size-mobile;
+      }
+    }
+
+    .description {
+      font-size: 20px;
+      line-height: 26px;
+      margin-bottom: 24px;
+      margin-left: 8px;
+      margin-right: 8px;
+    }
+
+    code-block {
+      font-size: 12px;
+      font-family: $osv-heading-font-family;
+    }
+
+    .cta {
+      margin: 32px 0;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 4px;
+    }
+  }
+
+  .data-sources {
+    background: url('/static/img/background-2.png');
+    background-position: calc(50% - 70px) top;
+    background-repeat: no-repeat;
+    margin-top: 0;
+    padding-top: 205px;
+  }
+
+  .usage-examples {
+    margin-top: 100px;
+
+    .heading {
+      font-size: $osv-heading-size;
+      text-align: center;
+      margin-bottom: 32px;
+    }
+
+    @media (max-width: $osv-mobile-breakpoint) {
+      .heading {
+        font-size: $osv-heading-size-mobile;
+      }
+    }
+
+    @media (max-width: $osv-mobile-breakpoint) {
+      .mobile-spacer {
+        display: none;
+      }
+    }
+
+    .description {
+      font-size: 20px;
+      line-height: 26px;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+
+    .cta {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 4px;
+    }
+  }
+
+  .code-card-container {
+    max-width: 1400px;
+    margin: 0 auto;
   }
 
   .code-card {
@@ -516,9 +1005,14 @@ dl.vulnerability-details,
     background: #d46d59;
     border-radius: 10px;
     padding: 32px;
+    margin-bottom: 32px;
 
     .code-card-title {
       font-size: 32px;
+    }
+
+    .code-card-content {
+      overflow: auto;
     }
 
     .code-card-copy {
@@ -535,22 +1029,41 @@ dl.vulnerability-details,
     }
   }
 
-  .api-banner {
-    width: 640px;
-    margin: 0 auto;
+  .open-source-banner {
+    max-width: 640px;
+    margin: 100px auto 0 auto;
 
     .heading {
-      font-size: 28px;
-      line-height: 54px;
+      font-size: $osv-heading-size;
+      text-align: center;
+      margin-bottom: 32px;
     }
+
+    @media (max-width: $osv-mobile-breakpoint) {
+      .heading {
+        font-size: $osv-heading-size-mobile;
+      }
+    }
+
     .description {
       font-size: 20px;
-      line-height: 24px;
+      line-height: 26px;
+      text-align: center;
     }
     .cta {
       margin: 32px 0;
-      text-align: center;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 4px;
     }
+  }
+
+  footer {
+    background: url('/static/img/footer-decoration.png');
+    background-repeat: no-repeat;
+    background-position: center;
+    min-height: 500px;
   }
 }
 
@@ -561,32 +1074,112 @@ dl.vulnerability-details,
   }
 
   .faq-title {
-    margin-top: 80px;
+    margin-top: 40px;
     margin-bottom: 48px;
   }
 
-  .open-docs {
-    display: block;
-    width: 744px;
-    padding: 20px 50px;
-    background: #676767;
-    font-size: 20px;
-    font-family: $osv-heading-font-family;
-  }
-
   .questions {
+    max-width: 800px;
+    margin: 0 auto;
+
     --const-mq-affordances:
       [screen] collapse
     ;
 
     .question {
       border-top: 1px dotted #a0a0a0;
-      padding: 20px 0;
+      cursor: pointer;
+      padding: 20px 10px;
       font-family: $osv-body-font-family;
+      font-size: 20px;
+      font-weight: bold;
+
+      &:hover {
+        background-color: $osv-grey-800;
+      }
+    }
+
+    [affordance=collapse] {
+      &::before {
+        padding: 0 8px;
+        // HACK: Invert the black chevron to white. The chevron is set using
+        // background-image, so we can't use the CSS fill property on it.
+        filter: invert(100%);
+      }
     }
 
     .answer {
+      margin-left: 20px;
       padding-bottom: 20px;
+      padding-top: 20px;
+      font-size: 16px;
+
+      p {
+        margin-bottom: 16px;
+      }
+
+      li {
+        list-style-type: decimal;
+      }
+    }
+  }
+}
+
+.blog-page {
+  .posts {
+    max-width: 800px;
+    margin: 0 auto;
+
+    .blog-entry {
+      padding-bottom: 48px;
+
+      .title {
+        font-size: 48px;
+        display: block;
+        font-family: $osv-heading-font-family;
+        padding-bottom: 16px;
+      }
+
+      .author {
+        font-size: 18px;
+        font-family: $osv-body-font-family;
+        font-weight: bold;
+        padding-bottom: 20px;
+      }
+
+      .summary {
+        font-size: 16px;
+      }
+
+      p {
+        padding-bottom: 16px;
+      }
+    }
+  }
+}
+
+.blog-post-page {
+  .post {
+    max-width: 800px;
+    margin: 0 auto;
+
+    font-size: 16px;
+
+    .title {
+      font-size: 48px;
+      font-family: $osv-heading-font-family;
+      padding-bottom: 16px;
+    }
+
+    .author {
+      font-size: 18px;
+      font-family: $osv-body-font-family;
+      font-weight: bold;
+      padding-bottom: 20px;
+    }
+
+    p {
+      margin-bottom: 16px;
     }
   }
 }

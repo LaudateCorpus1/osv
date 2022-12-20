@@ -14,32 +14,33 @@
 # limitations under the License.
 """OSV Importer."""
 import argparse
-import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
 import datetime
 import json
 import logging
 import os
+import threading
+from typing import Tuple, Optional
 
 from google.cloud import ndb
 from google.cloud import pubsub_v1
 from google.cloud import storage
+from google.cloud import logging as google_logging
 import pygit2
 
 import osv
 
 DEFAULT_WORK_DIR = '/work'
+DEFAULT_PUBLIC_LOGGING_BUCKET = 'osv-public-import-logs'
 
 _BUG_REDO_DAYS = 14
-_PROJECT = 'oss-vdb'
-_TASKS_TOPIC = 'projects/{project}/topics/{topic}'.format(
-    project=_PROJECT, topic='tasks')
+_TASKS_TOPIC = 'tasks'
 _OSS_FUZZ_EXPORT_BUCKET = 'oss-fuzz-osv-vulns'
 _EXPORT_WORKERS = 32
 _NO_UPDATE_MARKER = 'OSV-NO-UPDATE'
+_BUCKET_THREAD_COUNT = 20
 
-_ECOSYSTEM_PUSH_TOPICS = {
-    'PyPI': 'projects/oss-vdb/topics/pypi-bridge',
-}
+_client_store = threading.local()
 
 
 def _is_vulnerability_file(source_repo, file_path):
@@ -59,18 +60,32 @@ def utcnow():
   return datetime.datetime.utcnow()
 
 
+def replace_importer_log(client: storage.Client, source_name: str,
+                         bucket_name: str, import_failure_logs: [str]):
+  """Replace the public importer logs with the new one."""
+  bucket: storage.Bucket = client.bucket(bucket_name)
+  upload_string = '--- ' + datetime.datetime.utcnow().isoformat() + ' ---\n'
+  upload_string += '\n'.join(import_failure_logs)
+  bucket.blob(source_name).upload_from_string(upload_string)
+
+
 class Importer:
   """Importer."""
 
   def __init__(self, ssh_key_public_path, ssh_key_private_path, work_dir,
-               oss_fuzz_export_bucket):
+               public_log_bucket, oss_fuzz_export_bucket,
+               strict_validation: bool):
     self._ssh_key_public_path = ssh_key_public_path
     self._ssh_key_private_path = ssh_key_private_path
     self._work_dir = work_dir
     self._publisher = pubsub_v1.PublisherClient()
+    project = os.environ['GOOGLE_CLOUD_PROJECT']
+    self._tasks_topic = self._publisher.topic_path(project, _TASKS_TOPIC)
+    self._public_log_bucket = public_log_bucket
     self._oss_fuzz_export_bucket = oss_fuzz_export_bucket
 
     self._sources_dir = os.path.join(self._work_dir, 'sources')
+    self._strict_validation = strict_validation
     os.makedirs(self._sources_dir, exist_ok=True)
 
   def _git_callbacks(self, source_repo):
@@ -99,11 +114,10 @@ class Importer:
                                  source_repo,
                                  original_sha256,
                                  path,
-                                 deleted=False,
-                                 vulnerability=None):
+                                 deleted=False):
     """Request analysis."""
     self._publisher.publish(
-        _TASKS_TOPIC,
+        self._tasks_topic,
         data=b'',
         type='update',
         source=source_repo.name,
@@ -111,26 +125,10 @@ class Importer:
         original_sha256=original_sha256,
         deleted=str(deleted).lower())
 
-    if not vulnerability:
-      return
-
-    ecosystems = set()
-    for affected in vulnerability.affected:
-      if affected.package.ecosystem in ecosystems:
-        continue
-
-      ecosystems.add(affected.package.ecosystem)
-      ecosystem_push_topic = _ECOSYSTEM_PUSH_TOPICS.get(
-          affected.package.ecosystem)
-      if ecosystem_push_topic:
-        self._publisher.publish(
-            ecosystem_push_topic,
-            data=json.dumps(osv.vulnerability_to_dict(vulnerability)).encode())
-
   def _request_internal_analysis(self, bug):
     """Request internal analysis."""
     self._publisher.publish(
-        _TASKS_TOPIC,
+        self._tasks_topic,
         data=b'',
         type='impact',
         source_id=bug.source_id,
@@ -223,17 +221,26 @@ class Importer:
     source_repo.last_update_date = utcnow().date()
     source_repo.put()
 
-  def _process_updates_git(self, source_repo):
-    """Process updates for a git source_repo."""
-    repo = self.checkout(source_repo)
+  def _sync_from_previous_commit(self, source_repo, repo):
+    """Sync the repository from the previous commit.
 
-    walker = repo.walk(repo.head.target, pygit2.GIT_SORT_TOPOLOGICAL)
-    if source_repo.last_synced_hash:
-      walker.hide(source_repo.last_synced_hash)
+    This was refactored out of _process_updates_git() due to excessive
+    indentation.
 
-    # Get list of changed files since last sync.
+    Args:
+      source_repo: the Git source repository.
+      repo: the checked out Git source repository.
+
+    Returns:
+      changed_entries: the set of repository paths that have changed.
+      deleted_entries: the set of repository paths that have been deleted.
+    """
     changed_entries = set()
     deleted_entries = set()
+
+    walker = repo.walk(repo.head.target, pygit2.GIT_SORT_TOPOLOGICAL)
+    walker.hide(source_repo.last_synced_hash)
+
     for commit in walker:
       if commit.author.email == osv.AUTHOR_EMAIL:
         continue
@@ -260,6 +267,32 @@ class Importer:
                                                        delta.new_file.path):
             changed_entries.add(delta.new_file.path)
 
+    return changed_entries, deleted_entries
+
+  def _process_updates_git(self, source_repo: osv.SourceRepository):
+    """Process updates for a git source_repo."""
+    logging.info("Begin processing git: %s", source_repo.name)
+
+    repo = self.checkout(source_repo)
+
+    # Get list of changed files since last sync.
+    changed_entries = set()
+
+    if source_repo.last_synced_hash:
+      # Syncing from a previous commit.
+      changed_entries, _ = self._sync_from_previous_commit(source_repo, repo)
+
+    else:
+      # First sync from scratch.
+      logging.info('Syncing repo from scratch')
+      for root, _, filenames in os.walk(osv.repo_path(repo)):
+        for filename in filenames:
+          path = os.path.join(root, filename)
+          rel_path = os.path.relpath(path, osv.repo_path(repo))
+          if _is_vulnerability_file(source_repo, rel_path):
+            changed_entries.add(rel_path)
+
+    import_failure_logs = []
     # Create tasks for changed files.
     for changed_entry in changed_entries:
       path = os.path.join(osv.repo_path(repo), changed_entry)
@@ -268,57 +301,110 @@ class Importer:
         continue
 
       try:
-        vulnerability = osv.parse_vulnerability(
-            path, key_path=source_repo.key_path)
+        _ = osv.parse_vulnerability(
+            path, key_path=source_repo.key_path, strict=self._strict_validation)
+      except osv.sources.KeyPathError:
+        # Key path doesn't exist in the vulnerability.
+        # No need to log a full error, as this is expected result.
+        logging.info('Entry does not have an OSV entry: %s', changed_entry)
+        continue
       except Exception as e:
         logging.error('Failed to parse %s: %s', changed_entry, str(e))
+        # Don't include error stack trace as that might leak sensitive info
+        import_failure_logs.append('Failed to parse vulnerability "' + path +
+                                   '"')
         continue
 
       logging.info('Re-analysis triggered for %s', changed_entry)
       original_sha256 = osv.sha256(path)
-      self._request_analysis_external(
-          source_repo,
-          original_sha256,
-          changed_entry,
-          vulnerability=vulnerability)
+      self._request_analysis_external(source_repo, original_sha256,
+                                      changed_entry)
 
-    # Mark deleted entries as invalid.
-    for deleted_entry in deleted_entries:
-      path = os.path.join(osv.repo_path(repo), deleted_entry)
-      if os.path.exists(path):
-        # Path still exists. It must have been added back in another commit.
-        continue
-
-      logging.info('Marking %s as invalid', deleted_entry)
-      original_sha256 = ''
-      self._request_analysis_external(
-          source_repo, original_sha256, deleted_entry, deleted=True)
-
+    replace_importer_log(storage.Client(), source_repo.name,
+                         self._public_log_bucket, import_failure_logs)
     source_repo.last_synced_hash = str(repo.head.target)
     source_repo.put()
 
-  def _process_updates_bucket(self, source_repo):
-    """Process updates from bucket."""
-    if (source_repo.last_update_date and
-        source_repo.last_update_date >= utcnow().date()):
-      return
+    logging.info("Finish processing git: %s", source_repo.name)
 
+  def _process_updates_bucket(self, source_repo: osv.SourceRepository):
+    """Process updates from bucket."""
     # TODO(ochang): Use Pub/Sub change notifications for more efficient
     # processing.
+    logging.info("Begin processing bucket: %s", source_repo.name)
+
+    ignore_last_import_time = source_repo.ignore_last_import_time
+    if ignore_last_import_time:
+      source_repo.ignore_last_import_time = False
+      source_repo.put()
+
+    # First retrieve a list of files to parallel download
     storage_client = storage.Client()
-    for blob in storage_client.list_blobs(source_repo.bucket):
-      if not _is_vulnerability_file(source_repo, blob.name):
-        continue
+    listed_blob_names = [
+        blob.name for blob in storage_client.list_blobs(source_repo.bucket)
+    ]
+    import_failure_logs = []
 
-      logging.info('Bucket entry triggered for for %s/%s', source_repo.bucket,
-                   blob.name)
-      original_sha256 = osv.sha256_bytes(blob.download_as_bytes())
-      self._request_analysis_external(source_repo, original_sha256, blob.name)
+    def convert_blob_to_vuln(blob_name) -> Optional[Tuple[str, str]]:
+      """Download and parse gcs blob into [blob_hash, blob_name]"""
+      if not _is_vulnerability_file(source_repo, blob_name):
+        return None
 
+      logging.info('Bucket entry triggered for %s/%s', source_repo.bucket,
+                   blob_name)
+      # Use the _client_store thread local variable
+      # set in the thread pool initializer
+      bucket = _client_store.storage_client.bucket(source_repo.bucket)
+      blob_bytes = bucket.blob(blob_name).download_as_bytes()
+      if ignore_last_import_time:
+        blob_hash = osv.sha256_bytes(blob_bytes)
+        return blob_hash, blob_name
+
+      with _client_store.ndb_client.context():
+        try:
+          vulns = osv.parse_vulnerabilities_from_data(
+              blob_bytes,
+              os.path.splitext(blob_name)[1],
+              strict=self._strict_validation)
+          for vuln in vulns:
+            bug = osv.Bug.get_by_id(vuln.id)
+            # Check if the bug has been modified since last import
+            if bug is None or \
+                bug.import_last_modified != vuln.modified.ToDatetime():
+              blob_hash = osv.sha256_bytes(blob_bytes)
+              return blob_hash, blob_name
+
+          return None
+        except Exception as e:
+          logging.error('Failed to parse vulnerability %s: %s', blob_name, e)
+          # Don't include error stack trace as that might leak sensitive info
+          # List.append() is atomic and threadsafe.
+          import_failure_logs.append('Failed to parse vulnerability "' +
+                                     blob_name + '"')
+          return None
+
+    # Setup storage client
+    def thread_init():
+      _client_store.storage_client = storage.Client()
+      _client_store.ndb_client = ndb.Client()
+
+    with ThreadPoolExecutor(
+        _BUCKET_THREAD_COUNT, initializer=thread_init) as executor:
+      converted_vulns = executor.map(convert_blob_to_vuln, listed_blob_names)
+      for cv in converted_vulns:
+        if cv:
+          logging.info('Requesting analysis of bucket entry: %s/%s',
+                       source_repo.bucket, cv[1])
+          self._request_analysis_external(source_repo, cv[0], cv[1])
+
+    replace_importer_log(storage_client, source_repo.name,
+                         self._public_log_bucket, import_failure_logs)
     source_repo.last_update_date = utcnow().date()
     source_repo.put()
 
-  def process_updates(self, source_repo):
+    logging.info("Finished processing bucket: %s", source_repo.name)
+
+  def process_updates(self, source_repo: osv.SourceRepository):
     """Process user changes and updates."""
     if source_repo.type == osv.SourceRepositoryType.GIT:
       self._process_updates_git(source_repo)
@@ -364,8 +450,7 @@ class Importer:
       except Exception as e:
         logging.error('Failed to export: %s', e)
 
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=_EXPORT_WORKERS) as executor:
+    with ThreadPoolExecutor(max_workers=_EXPORT_WORKERS) as executor:
       for bug in osv.Bug.query(osv.Bug.ecosystem == 'OSS-Fuzz'):
         if not bug.public:
           continue
@@ -384,8 +469,16 @@ def main():
   parser = argparse.ArgumentParser(description='Importer')
   parser.add_argument(
       '--work_dir', help='Working directory', default=DEFAULT_WORK_DIR)
+  parser.add_argument(
+      '--public_log_bucket',
+      help="Public logging bucket",
+      default=DEFAULT_PUBLIC_LOGGING_BUCKET)
   parser.add_argument('--ssh_key_public', help='Public SSH key path')
   parser.add_argument('--ssh_key_private', help='Private SSH key path')
+  parser.add_argument(
+      '--strict_validation',
+      help='Fail to import entries that does not pass validation',
+      default=False)
   args = parser.parse_args()
 
   tmp_dir = os.path.join(args.work_dir, 'tmp')
@@ -393,11 +486,14 @@ def main():
   os.environ['TMPDIR'] = tmp_dir
 
   importer = Importer(args.ssh_key_public, args.ssh_key_private, args.work_dir,
-                      _OSS_FUZZ_EXPORT_BUCKET)
+                      args.public_log_bucket, _OSS_FUZZ_EXPORT_BUCKET,
+                      args.strict_validation)
   importer.run()
 
 
 if __name__ == '__main__':
   _ndb_client = ndb.Client()
+  logging_client = google_logging.Client()
+  logging_client.setup_logging()
   with _ndb_client.context():
     main()

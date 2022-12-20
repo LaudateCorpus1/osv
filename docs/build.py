@@ -49,7 +49,7 @@ def main():
   if os.path.exists(osv_path):
     shutil.rmtree(osv_path)
 
-  shutil.copytree(os.path.join(_ROOT_DIR, 'lib', 'osv'), osv_path)
+  shutil.copytree(os.path.join(_ROOT_DIR, 'osv'), osv_path)
 
   subprocess.run([
       'protoc',
@@ -70,25 +70,18 @@ def main():
   with open(_GENERATED_FILENAME) as f:
     spec = json.load(f)
 
-  with open('faq.md') as f:
-    faq = f.read()
-
   spec['host'] = 'api.osv.dev'
   spec['info']['title'] = 'OSV'
   spec['info']['version'] = '1.0'
   spec['tags'] = [{
       'name': 'api',
       'x-displayName': 'API',
-      'description': 'The API has 2 methods:'
+      'description': 'The API has 3 methods:'
   }, {
       'name': 'vulnerability_schema',
       'x-displayName': 'Vulnerability schema',
       'description': 'Please see the [OpenSSF Open Source Vulnerability spec]'
                      '(https://ossf.github.io/osv-schema/).',
-  }, {
-      'name': 'faq',
-      'x-displayName': 'Frequently asked questions',
-      'description': faq,
   }]
 
   spec['x-tagGroups'] = [{
@@ -97,12 +90,10 @@ def main():
   }, {
       'name': 'Schema',
       'tags': ['vulnerability_schema']
-  }, {
-      'name': 'Documentation',
-      'tags': ['faq']
   }]
 
   spec['paths']['/v1/query']['post']['tags'] = ['api']
+  spec['paths']['/v1/querybatch']['post']['tags'] = ['api']
   spec['paths']['/v1/vulns/{id}']['get']['tags'] = ['api']
 
   spec['paths']['/v1/query']['post']['x-code-samples'] = [{
@@ -115,6 +106,33 @@ def main():
            'curl -X POST -d \\\n'
            '  \'{"package": {"name": "mruby"}, "version": "2.1.2rc"}\' \\\n'
            '  "https://api.osv.dev/v1/query"')
+  }]
+
+  spec['paths']['/v1/querybatch']['post']['x-code-samples'] = [{
+      'lang':
+          'Curl example',
+      'source':
+          ("""cat <<EOF | curl -X POST -d @- "https://api.osv.dev/v1/querybatch"
+{
+  "queries": [
+    {
+      "package": {
+        "purl": "pkg:pypi/antlr4-python3-runtime@4.7.2"
+      }
+    },
+    {
+      "commit": "6879efc2c1596d11a6a6ad296f80063b558d5e0f"
+    },
+    {
+      "package": {
+        "ecosystem": "PyPI",
+        "name": "jinja2"
+      },
+      "version": "2.4.1"
+    }
+  ]
+}
+EOF""")
   }]
 
   spec['paths']['/v1/vulns/{id}']['get']['x-code-samples'] = [{

@@ -25,6 +25,7 @@ from google.cloud import ndb
 import pygit2
 
 import osv
+from osv import ecosystems
 from osv import tests
 import oss_fuzz
 import worker
@@ -63,11 +64,12 @@ class OssFuzzDetailsTest(unittest.TestCase):
     self.assertEqual(
         'OSS-Fuzz report: '
         'https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=1337\n\n'
+        '```\n'
         'Crash type: Heap-buffer-overflow\n'
         'Crash state:\n'
         'Foo\n'
         'Bar\n'
-        'Blah\n', details)
+        'Blah\n```\n', details)
 
   def test_no_issue(self):
     """Test generating details without an issue ID."""
@@ -76,11 +78,12 @@ class OssFuzzDetailsTest(unittest.TestCase):
 
     details = oss_fuzz.get_oss_fuzz_details('', crash_type, crash_state)
     self.assertEqual(
+        '```\n'
         'Crash type: Heap-buffer-overflow\n'
         'Crash state:\n'
         'Foo\n'
         'Bar\n'
-        'Blah\n', details)
+        'Blah\n```\n', details)
 
   def test_assert(self):
     """Basic assertion failures."""
@@ -94,11 +97,12 @@ class OssFuzzDetailsTest(unittest.TestCase):
     self.assertEqual(
         'OSS-Fuzz report: '
         'https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=1337\n\n'
+        '```\n'
         'Crash type: ASSERT\n'
         'Crash state:\n'
         'idx < length\n'
         'Foo\n'
-        'Bar\n', details)
+        'Bar\n```\n', details)
 
   def test_bad_cast(self):
     """Basic bad casts."""
@@ -112,11 +116,12 @@ class OssFuzzDetailsTest(unittest.TestCase):
     self.assertEqual(
         'OSS-Fuzz report: '
         'https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=1337\n\n'
+        '```\n'
         'Crash type: Bad-cast\n'
         'Crash state:\n'
         'Bad-cast to A from B\n'
         'Foo\n'
-        'Bar\n', details)
+        'Bar\n```\n', details)
 
 
 class ImpactTest(unittest.TestCase, tests.ExpectationTest(TEST_DATA_DIR)):
@@ -544,14 +549,8 @@ class UpdateTest(unittest.TestCase, tests.ExpectationTest(TEST_DATA_DIR)):
         'BLAH-123.yaml',
         self._load_test_data(os.path.join(TEST_DATA_DIR, 'BLAH-123.yaml')))
     self.mock_repo.add_file(
-        'BLAH-123.old.yaml',
-        self._load_test_data(os.path.join(TEST_DATA_DIR, 'BLAH-123.old.yaml')))
-    self.mock_repo.add_file(
         'BLAH-124.yaml',
         self._load_test_data(os.path.join(TEST_DATA_DIR, 'BLAH-124.yaml')))
-    self.mock_repo.add_file(
-        'BLAH-124.old.yaml',
-        self._load_test_data(os.path.join(TEST_DATA_DIR, 'BLAH-124.old.yaml')))
     self.mock_repo.add_file(
         'BLAH-125.yaml',
         self._load_test_data(os.path.join(TEST_DATA_DIR, 'BLAH-125.yaml')))
@@ -559,11 +558,11 @@ class UpdateTest(unittest.TestCase, tests.ExpectationTest(TEST_DATA_DIR)):
         'BLAH-127.yaml',
         self._load_test_data(os.path.join(TEST_DATA_DIR, 'BLAH-127.yaml')))
     self.mock_repo.add_file(
-        'BLAH-127.old.yaml',
-        self._load_test_data(os.path.join(TEST_DATA_DIR, 'BLAH-127.old.yaml')))
-    self.mock_repo.add_file(
         'BLAH-128.yaml',
         self._load_test_data(os.path.join(TEST_DATA_DIR, 'BLAH-128.yaml')))
+    self.mock_repo.add_file(
+        'BLAH-131.yaml',
+        self._load_test_data(os.path.join(TEST_DATA_DIR, 'BLAH-131.yaml')))
     self.mock_repo.commit('User', 'user@email')
 
     self.source_repo = osv.SourceRepository(
@@ -579,30 +578,57 @@ class UpdateTest(unittest.TestCase, tests.ExpectationTest(TEST_DATA_DIR)):
     osv.Bug(
         db_id='BLAH-123',
         project=['blah.com/package'],
-        ecosystem=['golang'],
+        ecosystem=['Go'],
         source_id='source:BLAH-123.yaml',
+        import_last_modified=datetime.datetime(2021, 1, 1, 0, 0),
         source_of_truth=osv.SourceOfTruth.SOURCE_REPO).put()
     osv.Bug(
         db_id='BLAH-124',
         regressed='eefe8ec3f1f90d0e684890e810f3f21e8500a4cd',
         project=['blah.com/package'],
-        ecosystem=['golang'],
+        ecosystem=['Go'],
         source_id='source:BLAH-124.yaml',
+        import_last_modified=datetime.datetime(2021, 1, 1, 0, 0),
         source_of_truth=osv.SourceOfTruth.SOURCE_REPO).put()
     osv.Bug(
         db_id='BLAH-125',
         regressed='eefe8ec3f1f90d0e684890e810f3f21e8500a4cd',
         fixed='8d8242f545e9cec3e6d0d2e3f5bde8be1c659735',
         project=['blah.com/package'],
-        ecosystem=['golang'],
+        ecosystem=['Go'],
         source_id='source:BLAH-125.yaml',
+        import_last_modified=datetime.datetime(2021, 1, 1, 0, 0),
         source_of_truth=osv.SourceOfTruth.SOURCE_REPO).put()
     osv.Bug(
         db_id='BLAH-127',
         project=['blah.com/package'],
-        ecosystem=['golang'],
+        ecosystem=['Go'],
         source_id='source:BLAH-127.yaml',
+        import_last_modified=datetime.datetime(2021, 1, 1, 0, 0),
         source_of_truth=osv.SourceOfTruth.SOURCE_REPO).put()
+    osv.Bug(
+        db_id='BLAH-131',
+        project=['blah.com/package'],
+        ecosystem=['ecosystem'],
+        source_id='source:BLAH-131.yaml',
+        import_last_modified=datetime.datetime(2021, 1, 1, 0, 0),
+        source_of_truth=osv.SourceOfTruth.SOURCE_REPO).put()
+
+    mock_publish = mock.patch('google.cloud.pubsub_v1.PublisherClient.publish')
+    self.mock_publish = mock_publish.start()
+    self.addCleanup(mock_publish.stop)
+
+    osv.ecosystems.work_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'testdata/tmp/')
+
+    # Add fake ecosystems used in tests to supported ecosystems.
+    osv.ecosystems._ecosystems.update({
+        'ecosystem': osv.ecosystems.OrderingUnsupportedEcosystem(),
+    })
+
+    if os.getenv('DEPSDEV_API_KEY'):
+      ecosystems.use_deps_dev = True
+      ecosystems.deps_dev_api_key = os.getenv('DEPSDEV_API_KEY')
 
   def tearDown(self):
     self.tmp_dir.cleanup()
@@ -639,6 +665,8 @@ class UpdateTest(unittest.TestCase, tests.ExpectationTest(TEST_DATA_DIR)):
         'febfac1940086bc1f6d3dc33fda0a1d1ba336209',
         'ff8cc32ba60ad9cbb3b23f0a82aad96ebe9ff76b',
     ], [commit.commit for commit in affected_commits])
+
+    self.mock_publish.assert_not_called()
 
   def test_update_limit(self):
     """Test basic update with limit events."""
@@ -915,6 +943,84 @@ class UpdateTest(unittest.TestCase, tests.ExpectationTest(TEST_DATA_DIR)):
         'eefe8ec3f1f90d0e684890e810f3f21e8500a4cd',
     ], [a.commit for a in affected_commits])
 
+    self.expect_equal('pypi_pubsub_calls', self.mock_publish.mock_calls)
+
+  def test_normalize_pypi(self):
+    """Test a PyPI entry normalizes as expected."""
+    self.source_repo.ignore_git = False
+    self.source_repo.versions_from_repo = False
+    self.source_repo.detect_cherrypicks = False
+    self.source_repo.put()
+
+    self.mock_repo.add_file(
+        'PYSEC-456.yaml',
+        self._load_test_data(os.path.join(TEST_DATA_DIR, 'PYSEC-456.yaml')))
+    self.mock_repo.commit('User', 'user@email')
+    task_runner = worker.TaskRunner(ndb_client, None, self.tmp_dir.name, None,
+                                    None)
+    message = mock.Mock()
+    message.attributes = {
+        'source': 'source',
+        'path': 'PYSEC-456.yaml',
+        'original_sha256': _sha256('PYSEC-456.yaml'),
+        'deleted': 'false',
+    }
+    task_runner._source_update(message)
+
+    repo = pygit2.Repository(self.remote_source_repo_path)
+    commit = repo.head.peel()
+    diff = repo.diff(commit.parents[0], commit)
+
+    self.expect_equal('diff_normalized_pypi', diff.patch)
+
+    self.expect_dict_equal(
+        'normalized_pypi',
+        ndb.Key(osv.Bug, 'source:PYSEC-456').get()._to_dict())
+
+    affected_commits = list(osv.AffectedCommit.query())
+    self.assertCountEqual([
+        'b1c95a196f22d06fcf80df8c6691cd113d8fefff',
+        'eefe8ec3f1f90d0e684890e810f3f21e8500a4cd',
+    ], [a.commit for a in affected_commits])
+
+    self.expect_equal('normalized_pypi_pubsub_calls',
+                      self.mock_publish.mock_calls)
+
+  def test_update_last_affected(self):
+    """Test a PyPI entry."""
+    self.source_repo.ignore_git = False
+    self.source_repo.versions_from_repo = False
+    self.source_repo.detect_cherrypicks = False
+    self.source_repo.put()
+
+    self.mock_repo.add_file(
+        'PYSEC-124.yaml',
+        self._load_test_data(os.path.join(TEST_DATA_DIR, 'PYSEC-124.yaml')))
+    self.mock_repo.commit('User', 'user@email')
+    task_runner = worker.TaskRunner(ndb_client, None, self.tmp_dir.name, None,
+                                    None)
+    message = mock.Mock()
+    message.attributes = {
+        'source': 'source',
+        'path': 'PYSEC-124.yaml',
+        'original_sha256': _sha256('PYSEC-124.yaml'),
+        'deleted': 'false',
+    }
+    task_runner._source_update(message)
+
+    repo = pygit2.Repository(self.remote_source_repo_path)
+    commit = repo.head.peel()
+
+    self.assertEqual('infra@osv.dev', commit.author.email)
+    self.assertEqual('OSV', commit.author.name)
+    self.assertEqual('Update PYSEC-124', commit.message)
+    diff = repo.diff(commit.parents[0], commit)
+    self.expect_equal('diff_last_affected', diff.patch)
+
+    self.expect_dict_equal(
+        'update_last_affected',
+        ndb.Key(osv.Bug, 'source:PYSEC-124').get()._to_dict())
+
   def test_update_maven(self):
     """Test updating maven."""
     self.source_repo.ignore_git = False
@@ -951,6 +1057,8 @@ class UpdateTest(unittest.TestCase, tests.ExpectationTest(TEST_DATA_DIR)):
         'update_maven',
         ndb.Key(osv.Bug, 'source:GHSA-838r-hvwh-24h8').get()._to_dict())
 
+    self.mock_publish.assert_not_called()
+
   def test_update_bucket(self):
     """Test bucket entries."""
     self.source_repo.type = osv.SourceRepositoryType.BUCKET
@@ -976,6 +1084,83 @@ class UpdateTest(unittest.TestCase, tests.ExpectationTest(TEST_DATA_DIR)):
     self.expect_dict_equal('update_bucket_1',
                            osv.Bug.get_by_id('GO-2021-0087')._to_dict())
 
+  def test_update_debian(self):
+    """Test updating debian."""
+    self.source_repo.ignore_git = False
+    self.source_repo.versions_from_repo = False
+    self.source_repo.detect_cherrypicks = False
+    self.source_repo.put()
+
+    self.mock_repo.add_file(
+        'DSA-3029-1.json',
+        self._load_test_data(os.path.join(TEST_DATA_DIR, 'DSA-3029-1.json')))
+    self.mock_repo.commit('User', 'user@email')
+    task_runner = worker.TaskRunner(ndb_client, None, self.tmp_dir.name, None,
+                                    None)
+    message = mock.Mock()
+    message.attributes = {
+        'source': 'source',
+        'path': 'DSA-3029-1.json',
+        'original_sha256': _sha256('DSA-3029-1.json'),
+        'deleted': 'false',
+    }
+    task_runner._source_update(message)
+
+    repo = pygit2.Repository(self.remote_source_repo_path)
+    commit = repo.head.peel()
+
+    self.assertEqual('infra@osv.dev', commit.author.email)
+    self.assertEqual('OSV', commit.author.name)
+    self.assertEqual('Update DSA-3029-1', commit.message)
+    diff = repo.diff(commit.parents[0], commit)
+
+    self.expect_equal('diff_debian', diff.patch)
+
+    self.expect_dict_equal(
+        'update_debian',
+        ndb.Key(osv.Bug, 'source:DSA-3029-1').get()._to_dict())
+
+    self.mock_publish.assert_not_called()
+
+  def test_update_alpine(self):
+    """Test updating debian."""
+    self.source_repo.ignore_git = False
+    self.source_repo.versions_from_repo = False
+    self.source_repo.detect_cherrypicks = False
+    self.source_repo.put()
+
+    self.mock_repo.add_file(
+        'CVE-2022-27449.json',
+        self._load_test_data(
+            os.path.join(TEST_DATA_DIR, 'CVE-2022-27449.json')))
+    self.mock_repo.commit('User', 'user@email')
+    task_runner = worker.TaskRunner(ndb_client, None, self.tmp_dir.name, None,
+                                    None)
+    message = mock.Mock()
+    message.attributes = {
+        'source': 'source',
+        'path': 'CVE-2022-27449.json',
+        'original_sha256': _sha256('CVE-2022-27449.json'),
+        'deleted': 'false',
+    }
+    task_runner._source_update(message)
+
+    repo = pygit2.Repository(self.remote_source_repo_path)
+    commit = repo.head.peel()
+
+    self.assertEqual('infra@osv.dev', commit.author.email)
+    self.assertEqual('OSV', commit.author.name)
+    self.assertEqual('Update CVE-2022-27449', commit.message)
+    diff = repo.diff(commit.parents[0], commit)
+
+    self.expect_equal('diff_alpine', diff.patch)
+
+    self.expect_dict_equal(
+        'update_alpine',
+        ndb.Key(osv.Bug, 'source:CVE-2022-27449').get()._to_dict())
+
+    self.mock_publish.assert_not_called()
+
   def test_update_android(self):
     """Test updating Android through bucket entries."""
     self.source_repo.type = osv.SourceRepositoryType.BUCKET
@@ -998,6 +1183,80 @@ class UpdateTest(unittest.TestCase, tests.ExpectationTest(TEST_DATA_DIR)):
     task_runner._source_update(message)
     self.expect_dict_equal('update_bucket_2',
                            osv.Bug.get_by_id('ASB-A-153358911')._to_dict())
+
+  def test_update_bad_ecosystem_new(self):
+    """Test adding from an unsupported ecosystem."""
+    self.mock_repo.add_file(
+        'BLAH-129.yaml',
+        self._load_test_data(os.path.join(TEST_DATA_DIR, 'BLAH-129.yaml')))
+    self.mock_repo.commit('User', 'user@email')
+
+    task_runner = worker.TaskRunner(ndb_client, None, self.tmp_dir.name, None,
+                                    None)
+    message = mock.Mock()
+    message.attributes = {
+        'source': 'source',
+        'path': 'BLAH-129.yaml',
+        'original_sha256': _sha256('BLAH-129.yaml'),
+        'deleted': 'false',
+    }
+    task_runner._source_update(message)
+    bug = osv.Bug.get_by_id('BLAH-129')
+    self.assertEqual(osv.BugStatus.INVALID, bug.status)
+
+  def test_update_partly_bad_ecosystem_new(self):
+    """Test adding vuln with both supported and unsupported ecosystem."""
+    self.mock_repo.add_file(
+        'BLAH-130.yaml',
+        self._load_test_data(os.path.join(TEST_DATA_DIR, 'BLAH-130.yaml')))
+    self.mock_repo.commit('User', 'user@email')
+
+    task_runner = worker.TaskRunner(ndb_client, None, self.tmp_dir.name, None,
+                                    None)
+    message = mock.Mock()
+    message.attributes = {
+        'source': 'source',
+        'path': 'BLAH-130.yaml',
+        'original_sha256': _sha256('BLAH-130.yaml'),
+        'deleted': 'false',
+    }
+    task_runner._source_update(message)
+
+    repo = pygit2.Repository(self.remote_source_repo_path)
+    commit = repo.head.peel()
+
+    self.assertEqual('infra@osv.dev', commit.author.email)
+    self.assertEqual('OSV', commit.author.name)
+    self.assertEqual('Update BLAH-130', commit.message)
+
+    self.expect_dict_equal('update_partly_bad_ecosystem_new',
+                           osv.Bug.get_by_id('BLAH-130')._to_dict())
+
+
+def test_update_partly_bad_ecosystem_delete(self):
+  """Test removal of only supported ecosystem in vulnerability with unsupported
+  and supported ecosystems.
+  """
+  task_runner = worker.TaskRunner(ndb_client, None, self.tmp_dir.name, None,
+                                  None)
+  message = mock.Mock()
+  message.attributes = {
+      'source': 'source',
+      'path': 'BLAH-131.yaml',
+      'original_sha256': _sha256('BLAH-131.yaml'),
+      'deleted': 'false',
+  }
+  task_runner._source_update(message)
+
+  repo = pygit2.Repository(self.remote_source_repo_path)
+  commit = repo.head.peel()
+
+  self.assertEqual('infra@osv.dev', commit.author.email)
+  self.assertEqual('OSV', commit.author.name)
+  self.assertEqual('Update BLAH-131', commit.message)
+
+  bug = osv.Bug.get_by_id('BLAH-131')
+  self.assertEqual(osv.BugStatus.INVALID, bug.status)
 
 
 if __name__ == '__main__':

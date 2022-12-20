@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -ex
 
 if [ $# -lt 2 ]; then
   echo "Usage: $0 <tag> <service-name>"
@@ -8,12 +8,13 @@ fi
 tag=$1
 name=$2
 
-rm -rf osv
-cp -r ../../lib/osv .
-docker build -t "gcr.io/oss-vdb/osv-server:$tag" . &&
-docker push "gcr.io/oss-vdb/osv-server:$tag"
+if [ -z "$CLOUDBUILD" ]; then
+  pushd ../../
+  docker build -t "gcr.io/oss-vdb/osv-server:$tag" -f gcp/api/Dockerfile .
+  docker push "gcr.io/oss-vdb/osv-server:$tag"
+  popd
+fi
 
-pipenv lock -r > requirements.txt
 gcloud run deploy $name \
   --platform managed \
   --project=oss-vdb \
